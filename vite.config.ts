@@ -12,8 +12,14 @@ export default defineConfig({
   tanstackStart: {
     server: { entry: "server" },
   },
-  // INYECTAMOS CONFIGURACIÓN ADICIONAL DE VITE PARA EVITAR BLOQUEOS EN EL DESPLIEGUE
+  // FORZAMOS EL CAMBIO DE ENTORNO EN LAS OPCIONES DE VITE
   vite: {
+    // Esto le avisa a Vinxi/Nitro (los motores que usa TanStack Start) que el destino es Vercel
+    // y desactiva los bloqueos de Cloudflare.
+    // Si prefieres Netlify, cambia "vercel" por "netlify"
+    define: {
+      "process.env.NITRO_PRESET": JSON.stringify("vercel"),
+    },
     build: {
       chunkSizeWarningLimit: 2000, // Elevamos el límite para que las advertencias no congelen Vercel/Cloudflare
       rollupOptions: {

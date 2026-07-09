@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
-import { Save, Calendar, BookOpen, AlertTriangle, UserCheck, Loader2 } from "lucide-react";
+import { Save, Calendar, BookOpen, AlertTriangle, UserCheck, Loader2, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/app/asistencia")({
@@ -30,10 +30,11 @@ function AsistenciaHibridaView() {
   const [bloqueSeleccionado, setBloqueSeleccionado] = useState<any>(null);
   const [fecha, setFecha] = useState(new Date().toISOString().split("T")[0]);
 
-  // ----- Estados de Alumnos y Asistencia -----
+  // ----- Estados de Alumnos, Asistencia y Resumen Único -----
   const [mallaBloques, setMallaBloques] = useState<any[]>([]);
   const [alumnos, setAlumnos] = useState<any[]>([]);
-  const [asistencias, setAsistencias] = useState<Record<string, { estado: string; observacion: string }>>({});
+  const [asistencias, setAsistencias] = useState<Record<string, { estado: string }>>({});
+  const [resumenClase, setResumenClase] = useState(""); // <--- UN SOLO CUADRO POR BLOQUE
   const [guardando, setGuardando] = useState(false);
   const [cargandoAlumnos, setCargandoAlumnos] = useState(false);
 
@@ -50,22 +51,18 @@ function AsistenciaHibridaView() {
         }
         setUsuarioReal(user);
 
-        // Consultamos tu columna 'rol' en la tabla 'usuarios'
         const { data: perfilBd } = await supabase
           .from("usuarios")
           .select("rol")
           .eq("id", user.id)
           .maybeSingle();
 
-        // ¡CORREGIDO!: Compara exactamente contra 'administrador' como está en tu base de datos
         const valorEsAdmin = perfilBd?.rol === "administrador";
         setEsAdmin(valorEsAdmin);
 
-        // Cargar bloques horarios globales del colegio
         const { data: bData } = await supabase.from("bloques_horarios").select("*").order("orden");
         setBloques(bData || []);
 
-        // Cargar los cursos según corresponda
         if (valorEsAdmin) {
           const { data: cData } = await supabase.from("cursos").select("*").order("nivel, numero");
           setCursosDisponibles(cData || []);
@@ -96,7 +93,8 @@ function AsistenciaHibridaView() {
     setBloqueSeleccionado(null);
     setAlumnos([]);
     setAsistencias({});
-  }, [cursoSeleccionado, diaSeleccionado]);
+    setResumenClase("");
+  }, [cursoSeleccionado, diaSeleccionado, fecha]); // Al cambiar fecha también limpia
 
   async function cargarMallaHorariaCurso() {
     try {
@@ -128,6 +126,7 @@ function AsistenciaHibridaView() {
     setBloqueSeleccionado(horarioCurso);
     setCargandoAlumnos(true);
     setAsistencias({});
+    setResumenClase("");
 
     try {
       const { data: alumnosData } = await supabase
@@ -136,36 +135,42 @@ function AsistenciaHibridaView() {
         .eq("curso_id", cursoSeleccionado)
         .order("apellido");
 
+      // Buscamos si ya existe la clase guardada en la tabla 'horarios' para sacar su resumen
       const { data: horarioReal } = await supabase
         .from("horarios")
-        .select("id")
+        .select("id, resumen_clase")
         .eq("curso_id", cursoSeleccionado)
         .eq("bloque_id", horarioCurso.bloque_id)
         .eq("dia_semana", diaSeleccionado)
         .maybeSingle();
 
-      let asistenciaExistente: any[] = [];
       if (horarioReal) {
+        setResumenClase(horarioReal.resumen_clase || "");
+        
         const { data: asigEx } = await supabase
           .from("asistencia")
-          .select("alumno_id, estado, observacion")
+          .select("alumno_id, estado")
           .eq("curso_id", cursoSeleccionado)
           .eq("fecha", fecha)
           .eq("horario_id", horarioReal.id);
-        asistenciaExistente = asigEx || [];
+        
+        const mapaAsistencias: Record<string, { estado: string }> = {};
+        alumnosData?.forEach(al => {
+          const existente = asigEx?.find(a => a.alumno_id === al.id);
+          mapaAsistencias[al.id] = {
+            estado: existente?.estado || "presente"
+          };
+        });
+        setAsistencias(mapaAsistencias);
+      } else {
+        const mapaAsistencias: Record<string, { estado: string }> = {};
+        alumnosData?.forEach(al => {
+          mapaAsistencias[al.id] = { estado: "presente" };
+        });
+        setAsistencias(mapaAsistencias);
       }
 
-      const mapaAsistencias: Record<string, { estado: string; observacion: string }> = {};
-      alumnosData?.forEach(al => {
-        const existente = asistenciaExistente?.find(a => a.alumno_id === al.id);
-        mapaAsistencias[al.id] = {
-          estado: existente?.estado || "presente",
-          observacion: existente?.observacion || ""
-        };
-      });
-
       setAlumnos(alumnosData || []);
-      setAsistencias(mapaAsistencias);
     } catch (error) {
       console.error(error);
     } finally {
@@ -190,7 +195,7 @@ function AsistenciaHibridaView() {
         if (carga?.profesor_id) profesorId = carga.profesor_id;
       }
 
-      let { data: { id: hRealId } } = await supabase
+      let { data: horarioReal } = await supabase
         .from("horarios")
         .select("id")
         .eq("curso_id", cursoSeleccionado)
@@ -198,7 +203,10 @@ function AsistenciaHibridaView() {
         .eq("dia_semana", diaSeleccionado)
         .maybeSingle() as any || { data: null };
 
+      let hRealId = horarioReal?.id;
+
       if (!hRealId) {
+        // Creamos la clase guardando el RESUMEN GENERAL DEL BLOQUE
         const { data: nuevoHorario, error: errH } = await supabase
           .from("horarios")
           .insert({
@@ -206,15 +214,25 @@ function AsistenciaHibridaView() {
             bloque_id: bloqueSeleccionado.bloque_id,
             asignatura_id: bloqueSeleccionado.asignatura_id,
             profesor_id: profesorId,
-            dia_semana: diaSeleccionado
+            dia_semana: diaSeleccionado,
+            resumen_clase: resumenClase || null // <--- Se guarda aquí
           })
           .select("id")
           .single();
         
         if (errH) throw errH;
         hRealId = nuevoHorario.id;
+      } else {
+        // Si el horario ya existía, actualizamos el resumen general del bloque
+        const { error: errUpdate } = await supabase
+          .from("horarios")
+          .update({ resumen_clase: resumenClase || null })
+          .eq("id", hRealId);
+        
+        if (errUpdate) throw errUpdate;
       }
 
+      // Limpiamos asistencias anteriores del día para este bloque
       await supabase
         .from("asistencia")
         .delete()
@@ -222,21 +240,22 @@ function AsistenciaHibridaView() {
         .eq("fecha", fecha)
         .eq("horario_id", hRealId);
 
+      // Insertamos la lista de alumnos limpia
       const registros = alumnos.map(al => ({
         alumno_id: al.id,
         curso_id: cursoSeleccionado,
         horario_id: hRealId,
         fecha: fecha,
         estado: asistencias[al.id]?.estado || "presente",
-        observacion: asistencias[al.id]?.observacion || null
+        observacion: null
       }));
 
       const { error } = await supabase.from("asistencia").insert(registros);
       if (error) throw error;
 
-      toast.success("✓ Registro de asistencia guardado de manera exitosa.");
+      toast.success("✓ Libro digital y resumen de clase guardados con éxito.");
     } catch (err: any) {
-      toast.error("✗ Error al registrar asistencia: " + err.message);
+      toast.error("✗ Error al guardar el registro: " + err.message);
     } finally {
       setGuardando(false);
     }
@@ -371,13 +390,29 @@ function AsistenciaHibridaView() {
           <div className="lg:col-span-2 space-y-4">
             {bloqueSeleccionado ? (
               <Card className="p-6 border shadow-sm space-y-4">
-                <div className="flex justify-between items-center border-b pb-3">
+                
+                {/* NUEVO PANEL: RECUADRO ÚNICO PARA EL RESUMEN GENERAL DE LA CLASE */}
+                <div className="bg-slate-50 p-4 border rounded-xl space-y-2">
+                  <div className="flex items-center gap-2 text-slate-700 font-bold text-xs uppercase tracking-wider">
+                    <FileText className="size-4 text-blue-600" />
+                    <span>Resumen General de la Clase / Contenido Dictado</span>
+                  </div>
+                  <textarea
+                    rows={2}
+                    placeholder="Escribe brevemente qué se enseñó en este bloque (Ej: Introducción a las fracciones, repaso para la prueba, lectura dirigida...)"
+                    className="w-full p-2.5 text-xs rounded-lg border bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none transition-all"
+                    value={resumenClase}
+                    onChange={(e) => setResumenClase(e.target.value)}
+                  />
+                </div>
+
+                <div className="flex justify-between items-center border-b pb-3 pt-2">
                   <div>
-                    <h3 className="font-bold text-base text-slate-800 uppercase">
-                      Estudiantes - {bloqueSeleccionado.asignaturas?.nombre}
+                    <h3 className="font-bold text-sm text-slate-800 uppercase">
+                      Control de Asistencia - {bloqueSeleccionado.asignaturas?.nombre}
                     </h3>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Pasando lista para el {bloqueSeleccionado.bloques_horarios?.nombre} ({bloqueSeleccionado.bloques_horarios?.hora_inicio})
+                      Nómina oficial de estudiantes registrados
                     </p>
                   </div>
                   <Button 
@@ -385,7 +420,7 @@ function AsistenciaHibridaView() {
                     className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold uppercase"
                     disabled={guardando || alumnos.length === 0}
                   >
-                    <Save className="size-4 mr-2"/> {guardando ? "Guardando..." : "Guardar Lista"}
+                    <Save className="size-4 mr-2"/> {guardando ? "Guardando..." : "Guardar Libro Digital"}
                   </Button>
                 </div>
 
@@ -399,8 +434,7 @@ function AsistenciaHibridaView() {
                       <TableHeader className="bg-slate-50">
                         <TableRow>
                           <TableHead className="font-bold text-slate-700 text-xs uppercase">Estudiante</TableHead>
-                          <TableHead className="font-bold text-slate-700 text-xs uppercase w-40">Asistencia</TableHead>
-                          <TableHead className="font-bold text-slate-700 text-xs uppercase">Observación</TableHead>
+                          <TableHead className="font-bold text-slate-700 text-xs uppercase w-48">Estado Asistencia</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -426,18 +460,6 @@ function AsistenciaHibridaView() {
                                 <option value="presente">✓ Presente</option>
                                 <option value="ausente">✗ Ausente</option>
                               </select>
-                            </TableCell>
-                            <TableCell>
-                              <input
-                                type="text"
-                                placeholder="Ej: Retiro temprano..."
-                                className="border text-xs rounded-md px-2 py-1.5 w-full bg-slate-50/50 focus:bg-white focus:outline-none"
-                                value={asistencias[al.id]?.observacion || ""}
-                                onChange={(e) => setAsistencias({
-                                  ...asistencias,
-                                  [al.id]: { ...asistencias[al.id], observacion: e.target.value }
-                                })}
-                              />
                             </TableCell>
                           </TableRow>
                         ))}
