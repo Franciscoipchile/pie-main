@@ -44,7 +44,8 @@ function AlumnosPieRoute() {
         .single();
 
       const rolReal = usuarioDb?.rol || user?.role;
-      const modoEncargada = rolReal === "encargada";
+      const modoEncargada = rolReal === "encargada" || rolReal === "profesora_pie";
+      const isProfesor = rolReal === "profesor";
       setEsEncargada(modoEncargada);
 
       // 2. Construcción de la consulta limpia
@@ -56,9 +57,26 @@ function AlumnosPieRoute() {
           usuarios (nombre, apellido)
         `);
 
+      let listadoCursosIds: string[] = [];
+
       // 🎯 COMPROMISO ABSOLUTO: Si es encargada PIE, forzar que solo traiga en_pie = true
       if (modoEncargada) {
         query = query.eq("en_pie", true);
+      } else if (isProfesor) {
+        // Cargar los cursos asignados al profesor
+        const { data: cargas } = await supabase
+          .from("cargas_academicas")
+          .select("curso_id")
+          .eq("profesor_id", authUser.id);
+        
+        listadoCursosIds = cargas?.map(c => c.curso_id).filter(Boolean) || [];
+        
+        if (listadoCursosIds.length > 0) {
+          query = query.in("curso_id", listadoCursosIds);
+        } else {
+          // Si no tiene asignaciones, forzar a que no retorne ningún alumno
+          query = query.eq("curso_id", "00000000-0000-0000-0000-000000000000");
+        }
       }
 
       const { data: dataAlumnos, error: errAlumnos } = await query.order("apellido", { ascending: true });
@@ -67,7 +85,14 @@ function AlumnosPieRoute() {
       if (dataAlumnos) setAlumnos(dataAlumnos || []);
 
       const { data: dataCursos } = await supabase.from("cursos").select("*");
-      if (dataCursos) setCursosDb(dataCursos);
+      if (dataCursos) {
+        if (isProfesor) {
+          // Filtrar también el listado del selector de cursos para mostrar solo los asignados
+          setCursosDb(dataCursos.filter(c => listadoCursosIds.includes(c.id)));
+        } else {
+          setCursosDb(dataCursos);
+        }
+      }
     } catch (err) {
       console.error("Error al cargar la nómina segmentada:", err);
     } finally {

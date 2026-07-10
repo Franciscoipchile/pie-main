@@ -29,21 +29,49 @@ function AlumnosList() {
   const [loading, setLoading] = useState(true);
   
   const isEncargada = user?.role === "encargada";
+  const isProfesor = user?.role === "profesor";
 
   useEffect(() => {
     const cargarDatos = async () => {
       setLoading(true);
-      // ¡CORREGIDO!: Agregamos "nivel" a la relación de cursos en el select
-      let query = supabase.from("alumnos").select("*, cursos(numero, letra, nivel), usuarios(nombre, apellido)");
-      if (isEncargada) query = query.eq("en_pie", true);
-      const { data } = await query.order("apellido");
-      const { data: cursos } = await supabase.from("cursos").select("*");
-      setAlumnos(data || []);
-      setCursosDb(cursos || []);
-      setLoading(false);
+      try {
+        let query = supabase.from("alumnos").select("*, cursos(numero, letra, nivel), usuarios(nombre, apellido)");
+        
+        if (isEncargada) {
+          query = query.eq("en_pie", true);
+        } else if (isProfesor) {
+          // Obtener usuario autenticado para saber su ID real
+          const { data: { user: authUser } } = await supabase.auth.getUser();
+          if (authUser) {
+            // Cargar los cursos asignados al profesor
+            const { data: cargas } = await supabase
+              .from("cargas_academicas")
+              .select("curso_id")
+              .eq("profesor_id", authUser.id);
+            
+            const cursoIds = cargas?.map(c => c.curso_id).filter(Boolean) || [];
+            
+            if (cursoIds.length > 0) {
+              query = query.in("curso_id", cursoIds);
+            } else {
+              // Si no tiene asignaciones, forzar a que no retorne ningún alumno
+              query = query.eq("curso_id", "00000000-0000-0000-0000-000000000000");
+            }
+          }
+        }
+        
+        const { data } = await query.order("apellido");
+        const { data: cursos } = await supabase.from("cursos").select("*");
+        setAlumnos(data || []);
+        setCursosDb(cursos || []);
+      } catch (err) {
+        console.error("Error al cargar datos de alumnos:", err);
+      } finally {
+        setLoading(false);
+      }
     };
     cargarDatos();
-  }, [isEncargada]);
+  }, [isEncargada, isProfesor]);
 
   const filtrados = alumnos.filter(a => 
     `${a.nombre} ${a.apellido} ${a.rut}`.toLowerCase().includes(busqueda.toLowerCase())

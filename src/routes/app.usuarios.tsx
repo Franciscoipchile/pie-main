@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Checkbox } from "@/components/ui/checkbox";
 import { supabase } from "@/lib/supabase";
+import { createClient } from "@supabase/supabase-js";
 import {
   Select,
   SelectContent,
@@ -51,6 +52,20 @@ export const Route = createFileRoute("/app/usuarios")({
   },
   component: UsuariosView,
 });
+
+// Cliente temporal de Supabase para registro de usuarios sin persistir la sesión.
+// Evita cerrar la sesión actual del Administrador al llamar a signUp.
+const tempSupabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL || "",
+  import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "",
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  }
+);
 
 const Req = () => <span className="text-destructive" aria-hidden>*</span>;
 
@@ -235,15 +250,28 @@ function UsuariosView() {
     }
     setCreando(true);
     try {
-      // 1. Generamos un ID único temporal para el usuario en la tabla pública
-      const temporaryId = crypto.randomUUID();
+      // Mapear el rol del formulario al formato esperado por la Base de Datos
+      const mappedRole = role === "encargada" ? "profesora_pie" : role === "admin" ? "administrador" : "profesor";
 
-      // 2. Insertamos DIRECTAMENTE en tu tabla usuarios (Sin alterar la sesión del Admin)
-      const { error: errUser } = await supabase.from("usuarios").insert({
-        id: temporaryId,
+      // 1. Registrar al usuario en Supabase Auth usando el cliente temporal sin persistencia de sesión
+      const { data: authData, error: authError } = await tempSupabase.auth.signUp({
+        email: email.trim().toLowerCase(),
+        password: pass.trim(),
+      });
+
+      if (authError) throw authError;
+
+      const newUser = authData.user;
+      if (!newUser?.id) {
+        throw new Error("No se pudo obtener el ID del usuario creado en Supabase Auth.");
+      }
+
+      // 2. Registrar/actualizar el perfil del usuario (Usamos upsert por si un trigger de base de datos ya auto-creó la fila al registrarse la cuenta en Auth)
+      const { error: errUser } = await supabase.from("usuarios").upsert({
+        id: newUser.id,
         nombre: nombre.trim(),
         apellido: apellidos.trim(),
-        rol: role === "encargada" ? "profesora_pie" : role,
+        rol: mappedRole,
         rut: rut.trim() || null,
         email: email.trim().toLowerCase(),
         activo: true // Aseguramos que entre activo
@@ -251,18 +279,19 @@ function UsuariosView() {
       
       if (errUser) throw errUser;
 
-      // 3. Lo agregamos al store local
+      // 3. Lo agregamos al store local usando el ID real
       addUsuario({
+        id: newUser.id,
         nombre: `${nombre.trim()} ${apellidos.trim()}`,
         role,
         rut: rut.trim() || undefined,
         email: email.trim().toLowerCase() || undefined,
       });
 
-      toast.success(`✓ Profesor registrado en la base de datos con éxito`);
+      toast.success(`✓ Usuario registrado y cuenta de acceso creada con éxito`);
       reset();
       
-      // 4. Recargamos de forma segura. Como no tocamos Auth, sigues siendo Admin.
+      // 4. Recargamos de forma segura. Como no tocamos Auth en el cliente principal, sigues siendo Admin.
       window.location.reload();
 
     } catch (err: any) {

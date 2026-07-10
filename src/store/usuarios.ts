@@ -28,7 +28,7 @@ const SEED: Usuario[] = [
 
 interface State {
   usuarios: Usuario[];
-  addUsuario: (u: Omit<Usuario, "id">) => void;
+  addUsuario: (u: Omit<Usuario, "id"> & { id?: string }) => void;
   updateUsuario: (id: string, patch: Partial<Usuario>) => void;
   removeUsuario: (id: string) => void;
 }
@@ -38,7 +38,7 @@ export const useUsuarios = create<State>()(
     (set) => ({
       usuarios: SEED,
       addUsuario: (u) => {
-        const nuevo: Usuario = { ...u, id: crypto.randomUUID() };
+        const nuevo: Usuario = { ...u, id: u.id || crypto.randomUUID() };
         set((s) => ({ usuarios: [...s.usuarios, nuevo] }));
         logAction({
           accion: "Usuario creado",
